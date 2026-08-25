@@ -15,6 +15,8 @@ namespace BoozeBlocks.Interaction
         private Renderer[] pickupRenderers;
         private bool available = true;
 
+        public DefenseItemType ItemType => itemType;
+        public int Uses => uses;
         public string Prompt => itemType == DefenseItemType.FryingPan
             ? "E - Recoger sarten"
             : "E - Recoger escoba";

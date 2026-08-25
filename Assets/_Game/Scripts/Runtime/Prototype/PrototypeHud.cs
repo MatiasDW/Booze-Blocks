@@ -2,6 +2,7 @@ using BoozeBlocks.Horde;
 using BoozeBlocks.Interaction;
 using BoozeBlocks.Player;
 using UnityEngine;
+using UnityEngine.InputSystem;
 
 namespace BoozeBlocks.Prototype
 {
@@ -18,16 +19,28 @@ namespace BoozeBlocks.Prototype
         private PlayerActionFeedback feedback;
         private RunProgression progression;
         private DrinkPreparationStation drinkStation;
+        private GrillTaskStation grillStation;
+        private RunSessionDirector session;
+        private ContextObjectiveTracker objectives;
+        private PrototypePauseMenu pauseMenu;
         private GUIStyle labelStyle;
         private GUIStyle titleStyle;
+        private GUIStyle compactStyle;
         private float textRefreshTimer;
         private string stateText = string.Empty;
         private string populationText = string.Empty;
         private string objectiveText = string.Empty;
+        private string waveText = string.Empty;
+        private string inventoryText = string.Empty;
+        private bool detailsRequested;
+
+        public bool IsDetailVisible => detailsRequested;
+        public bool IsSuppressed => Time.timeScale <= 0f || (pauseMenu != null && pauseMenu.IsPaused);
 
         public void Configure(PlayerVitals playerVitals, PlayerStateMachine stateMachine,
             PlayerInteraction playerInteraction, PrototypeRound prototypeRound, HordeDirector hordeDirector,
-            PlayerInventory playerInventory, RunProgression runProgression, DrinkPreparationStation station)
+            PlayerInventory playerInventory, RunProgression runProgression, DrinkPreparationStation station,
+            GrillTaskStation grill, RunSessionDirector runSession, ContextObjectiveTracker objectiveTracker)
         {
             vitals = playerVitals;
             playerState = stateMachine;
@@ -39,64 +52,84 @@ namespace BoozeBlocks.Prototype
             feedback = playerVitals.GetComponent<PlayerActionFeedback>();
             progression = runProgression;
             drinkStation = station;
+            grillStation = grill;
+            session = runSession;
+            objectives = objectiveTracker;
+        }
+
+        public void SetPauseMenu(PrototypePauseMenu prototypePauseMenu)
+        {
+            pauseMenu = prototypePauseMenu;
         }
 
         private void Update()
         {
             if (vitals == null || round == null || horde == null) return;
+            detailsRequested = Keyboard.current != null && Keyboard.current.tabKey.isPressed;
             textRefreshTimer -= Time.unscaledDeltaTime;
             if (textRefreshTimer > 0f) return;
             textRefreshTimer = 0.25f;
 
-            string phase = horde.IsWaveActive ? "activa" : "descanso";
-            populationText = $"Jugadores: {round.SurvivingPlayerCount}/{round.RegisteredPlayerCount} | Horda: {horde.ActiveUnitCount}/{horde.DesiredUnitCount} | Entradas: {HordeEntranceRegistry.OpenCount}/4";
-            stateText = $"Estado: {playerState.State} | Oleada {horde.CurrentWave} ({phase}, {Mathf.CeilToInt(horde.WaveRemainingTime)}s)";
-            objectiveText = progression != null ? progression.StatusText : string.Empty;
+            string phase = horde.IsPreparing ? "preparacion" : horde.IsWaveActive ? "activa" : "descanso";
+            populationText =
+                $"Jugadores: {round.SurvivingPlayerCount}/{round.RegisteredPlayerCount} | Horda: {horde.ActiveUnitCount}/{horde.WaveUnitLimit} | Flujo entradas: {HordeEntranceRegistry.TotalFlow:0.0}/4";
+            stateText = $"Estado: {playerState.State} | Oleada {horde.CurrentWave} ({phase})";
+            waveText = $"OLEADA {horde.CurrentWave}  {phase.ToUpperInvariant()} {Mathf.CeilToInt(horde.WaveRemainingTime)}s   |   RONDA {FormatTime(round.RemainingTime)}";
+            inventoryText = BuildInventoryText();
+            objectiveText = objectives != null ? objectives.CurrentObjective : progression?.StatusText ?? string.Empty;
         }
 
         private void OnGUI()
         {
-            if (vitals == null || round == null) return;
+            if (vitals == null || round == null || IsSuppressed) return;
             EnsureStyles();
 
-            GUI.Box(new Rect(18f, 18f, 390f, 288f), GUIContent.none);
-            GUI.Label(new Rect(34f, 28f, 300f, 30f), "BOOZE & BLOCKS", titleStyle);
-            DrawBar(new Rect(34f, 68f, 285f, 18f), vitals.HealthRatio, new Color(0.85f, 0.22f, 0.18f), "HEALTH");
-            DrawBar(new Rect(34f, 100f, 285f, 18f), vitals.BuzzRatio, new Color(0.96f, 0.67f, 0.12f), "BUZZ");
-            DrawBar(new Rect(34f, 132f, 285f, 18f), vitals.BalanceRatio, new Color(0.18f, 0.72f, 0.86f), "BALANCE");
-            GUI.Label(new Rect(34f, 162f, 285f, 24f), stateText, labelStyle);
-            GUI.Label(new Rect(34f, 188f, 285f, 24f), populationText, labelStyle);
-            if (inventory != null)
-            {
-                string itemName = inventory.Model.DefenseItem switch
-                {
-                    DefenseItemType.Broom => "Escoba",
-                    DefenseItemType.FryingPan => "Sarten",
-                    _ => "Vacio"
-                };
-                GUI.Label(new Rect(34f, 214f, 350f, 24f),
-                    $"Botella: {inventory.Model.DrinkServings}/{inventory.Model.DrinkCapacity} | Objeto: {itemName} ({inventory.Model.DefenseUses})",
-                    labelStyle);
-            }
-            if (appearance != null)
-            {
-                GUI.Label(new Rect(34f, 238f, 350f, 24f), $"Look: {appearance.CurrentDescription}", labelStyle);
-            }
-            GUI.Label(new Rect(34f, 262f, 350f, 24f), $"Supervivencia: {Mathf.CeilToInt(round.RemainingTime)}s", labelStyle);
+            float panelWidth = Mathf.Min(detailsRequested ? 430f : 350f, Screen.width - 36f);
+            float panelHeight = detailsRequested ? 370f : 154f;
+            Rect panel = new Rect(18f, 18f, panelWidth, panelHeight);
+            GUI.Box(panel, GUIContent.none);
+            DrawBar(new Rect(panel.x + 14f, panel.y + 14f, panel.width - 28f, 15f),
+                vitals.HealthRatio, new Color(0.85f, 0.22f, 0.18f), "HEALTH");
+            DrawBar(new Rect(panel.x + 14f, panel.y + 42f, panel.width - 28f, 15f),
+                vitals.BuzzRatio, new Color(0.96f, 0.67f, 0.12f), "BUZZ");
+            DrawBar(new Rect(panel.x + 14f, panel.y + 70f, panel.width - 28f, 15f),
+                1f - vitals.BalanceRatio, new Color(0.18f, 0.72f, 0.86f), "STAMINA");
+            GUI.Label(new Rect(panel.x + 14f, panel.y + 96f, panel.width - 28f, 22f),
+                waveText, compactStyle);
+            GUI.Label(new Rect(panel.x + 14f, panel.y + 120f, panel.width - 92f, 22f),
+                inventoryText, compactStyle);
+            GUI.Label(new Rect(panel.x + panel.width - 82f, panel.y + 120f, 68f, 22f),
+                "TAB INFO", compactStyle);
 
-            GUI.Label(new Rect(18f, Screen.height - 108f, 650f, 26f), objectiveText, labelStyle);
-            if (drinkStation != null)
+            if (detailsRequested)
             {
-                string stationText = drinkStation.State switch
-                {
-                    DrinkStationState.Preparing => $"Mezcla preparandose: {Mathf.CeilToInt(drinkStation.RemainingPreparation)}s",
-                    DrinkStationState.Ready => $"Mezcla lista: {drinkStation.ServingsReady} porciones",
-                    _ => "Estacion libre: inicia una mezcla con E"
-                };
-                GUI.Label(new Rect(18f, Screen.height - 82f, 650f, 26f), stationText, labelStyle);
+                float x = panel.x + 14f;
+                float width = panel.width - 28f;
+                GUI.Label(new Rect(x, panel.y + 151f, width, 22f), stateText, labelStyle);
+                GUI.Label(new Rect(x, panel.y + 174f, width, 22f), populationText, labelStyle);
+                GUI.Label(new Rect(x, panel.y + 197f, width, 22f),
+                    $"Look: {appearance?.CurrentDescription ?? "-"}", labelStyle);
+                GUI.Label(new Rect(x, panel.y + 220f, width, 22f),
+                    $"Puntaje: {session?.Score.Score ?? 0} | Asados: {session?.Score.Servings ?? 0} | Rescates: {session?.Score.Rescues ?? 0}",
+                    labelStyle);
+                GUI.Label(new Rect(x, panel.y + 243f, width, 22f),
+                    $"Crisis: {session?.CrisisName ?? "-"} - {session?.CrisisDescription ?? string.Empty}",
+                    labelStyle);
+                GUI.Label(new Rect(x, panel.y + 266f, width, 40f), objectiveText, labelStyle);
+                GUI.Label(new Rect(x, panel.y + 307f, width, 22f),
+                    $"Parrilla: {grillStation?.Prompt ?? "-"}", labelStyle);
+                GUI.Label(new Rect(x, panel.y + 330f, width, 22f),
+                    BuildDrinkStationText(), labelStyle);
             }
-            GUI.Label(new Rect(18f, Screen.height - 52f, 700f, 26f),
-                "Mover: WASD | Saltar: Espacio | Interactuar: E | Defender: F | Beber: Q", labelStyle);
+
+            if (objectives != null && !string.IsNullOrEmpty(objectives.TutorialText))
+            {
+                float tutorialWidth = Mathf.Clamp(Screen.width - panel.xMax - 32f, 220f, 500f);
+                Rect tutorial = new Rect(Screen.width - tutorialWidth - 18f, 18f, tutorialWidth, 34f);
+                GUI.Box(tutorial, GUIContent.none);
+                GUI.Label(new Rect(tutorial.x + 10f, tutorial.y + 2f, tutorial.width - 20f, 28f),
+                    objectives.TutorialText, titleStyle);
+            }
 
             if (feedback != null && feedback.IsVisible)
             {
@@ -111,12 +144,38 @@ namespace BoozeBlocks.Prototype
                     interaction.CurrentPrompt, titleStyle);
             }
 
-            if (round.State != PrototypeRoundState.Playing)
+        }
+
+        private string BuildInventoryText()
+        {
+            if (inventory == null) return "BOTELLA - | SIN OBJETO";
+            string itemName = inventory.Model.DefenseItem switch
             {
-                string message = round.State == PrototypeRoundState.Won ? "ESCAPARON" : "LA HORDA GANO";
-                GUI.Box(new Rect(Screen.width * 0.5f - 170f, Screen.height * 0.5f - 55f, 340f, 110f), GUIContent.none);
-                GUI.Label(new Rect(Screen.width * 0.5f - 145f, Screen.height * 0.5f - 20f, 300f, 50f), message, titleStyle);
-            }
+                DefenseItemType.Broom => "ESCOBA",
+                DefenseItemType.FryingPan => "SARTEN",
+                _ => "SIN OBJETO"
+            };
+            string uses = inventory.Model.DefenseItem == DefenseItemType.None
+                ? string.Empty
+                : $" x{inventory.Model.DefenseUses}";
+            return $"BOTELLA {inventory.Model.DrinkServings}/{inventory.Model.DrinkCapacity}  |  {itemName}{uses}";
+        }
+
+        private string BuildDrinkStationText()
+        {
+            if (drinkStation == null) return "BOOZE LAB: -";
+            return drinkStation.State switch
+            {
+                DrinkStationState.Preparing => $"BOOZE LAB: preparando {Mathf.CeilToInt(drinkStation.RemainingPreparation)}s",
+                DrinkStationState.Ready => $"BOOZE LAB: {drinkStation.ServingsReady} porciones listas",
+                _ => "BOOZE LAB: libre"
+            };
+        }
+
+        private static string FormatTime(float seconds)
+        {
+            int total = Mathf.Max(0, Mathf.CeilToInt(seconds));
+            return $"{total / 60:00}:{total % 60:00}";
         }
 
         private void DrawBar(Rect rect, float value, Color color, string label)
@@ -143,6 +202,11 @@ namespace BoozeBlocks.Prototype
             {
                 fontSize = 18,
                 alignment = TextAnchor.MiddleCenter
+            };
+            compactStyle = new GUIStyle(labelStyle)
+            {
+                fontSize = 12,
+                alignment = TextAnchor.MiddleLeft
             };
         }
     }

@@ -51,5 +51,27 @@ namespace BoozeBlocks.Tests
             Assert.That(model.Buzz, Is.EqualTo(10f));
             Assert.That(model.Balance, Is.EqualTo(5f));
         }
+
+        [Test]
+        public void DamageAndFoodHealing_ChangeHealthWithinConfiguredBounds()
+        {
+            PlayerVitalsModel model = new PlayerVitalsModel(150f, 100f, 100f);
+
+            Assert.That(model.ApplyDamage(60f), Is.False);
+            model.Heal(25f);
+            Assert.That(model.Health, Is.EqualTo(115f));
+
+            model.Heal(100f);
+            Assert.That(model.Health, Is.EqualTo(150f));
+        }
+
+        [Test]
+        public void LethalDamage_ReportsElimination()
+        {
+            PlayerVitalsModel model = new PlayerVitalsModel(150f, 100f, 100f);
+
+            Assert.That(model.ApplyDamage(150f), Is.True);
+            Assert.That(model.IsEliminated, Is.True);
+        }
     }
 }

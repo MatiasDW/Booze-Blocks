@@ -65,5 +65,15 @@ namespace BoozeBlocks.Player
         {
             DefensePowerLevel = Math.Max(DefensePowerLevel, Math.Max(0, level));
         }
+
+        public void ApplySnapshot(int drinkServings, int drinkCapacity, DefenseItemType defenseItem,
+            int defenseUses, int defensePowerLevel)
+        {
+            DrinkCapacity = Math.Max(1, drinkCapacity);
+            DrinkServings = Math.Clamp(drinkServings, 0, DrinkCapacity);
+            DefenseUses = Math.Max(0, defenseUses);
+            DefenseItem = DefenseUses > 0 ? defenseItem : DefenseItemType.None;
+            DefensePowerLevel = Math.Max(0, defensePowerLevel);
+        }
     }
 }

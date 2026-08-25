@@ -2,7 +2,12 @@
   "name": "BoozeBlocks.Runtime",
   "rootNamespace": "BoozeBlocks",
   "references": [
-    "Unity.InputSystem"
+    "Unity.InputSystem",
+    "Unity.Collections",
+    "Unity.Netcode.Runtime",
+    "Unity.Services.Authentication",
+    "Unity.Services.Core",
+    "Unity.Services.Multiplayer"
   ],
   "includePlatforms": [],
   "excludePlatforms": [],

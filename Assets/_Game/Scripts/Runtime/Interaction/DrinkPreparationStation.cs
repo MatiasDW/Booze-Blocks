@@ -21,6 +21,7 @@ namespace BoozeBlocks.Interaction
         private int servingsReady;
         private Renderer stateIndicator;
         private MaterialPropertyBlock indicatorProperties;
+        private bool hasSimulationAuthority = true;
 
         public DrinkStationState State { get; private set; }
         public float RemainingPreparation => State == DrinkStationState.Preparing
@@ -39,7 +40,7 @@ namespace BoozeBlocks.Interaction
 
         private void Update()
         {
-            if (State == DrinkStationState.Preparing && Time.time >= readyAt)
+            if (hasSimulationAuthority && State == DrinkStationState.Preparing && Time.time >= readyAt)
             {
                 State = DrinkStationState.Ready;
                 servingsReady = servingsPerBatch;
@@ -74,7 +75,7 @@ namespace BoozeBlocks.Interaction
 
         public void Interact(PlayerVitals player)
         {
-            if (!CanInteract(player)) return;
+            if (!hasSimulationAuthority || !CanInteract(player)) return;
             if (State == DrinkStationState.Idle)
             {
                 State = DrinkStationState.Preparing;
@@ -86,6 +87,20 @@ namespace BoozeBlocks.Interaction
             int stored = inventory.StoreDrinks(servingsReady);
             servingsReady -= stored;
             if (servingsReady <= 0) State = DrinkStationState.Idle;
+        }
+
+        public void SetSimulationAuthority(bool isAuthoritative)
+        {
+            hasSimulationAuthority = isAuthoritative;
+        }
+
+        public void ApplyRemoteState(DrinkStationState state, float remainingPreparation, int readyServings)
+        {
+            if (hasSimulationAuthority) return;
+            State = state;
+            readyAt = Time.time + Mathf.Max(0f, remainingPreparation);
+            servingsReady = Mathf.Max(0, readyServings);
+            RefreshIndicator();
         }
 
         private void RefreshIndicator()

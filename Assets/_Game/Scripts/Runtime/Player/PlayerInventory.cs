@@ -1,3 +1,4 @@
+using System;
 using UnityEngine;
 
 namespace BoozeBlocks.Player
@@ -6,12 +7,15 @@ namespace BoozeBlocks.Player
     [RequireComponent(typeof(PlayerInputReader), typeof(PlayerVitals))]
     public sealed class PlayerInventory : MonoBehaviour
     {
+        public event Action Drank;
+
         [SerializeField, Min(0f)] private float buzzPerServing = 38f;
 
         private PlayerInputReader input;
         private PlayerVitals vitals;
         private PlayerActionFeedback feedback;
         private PlayerInventoryModel model;
+        private bool hasExecutionAuthority = true;
 
         public PlayerInventoryModel Model => model ??= new PlayerInventoryModel();
 
@@ -28,7 +32,7 @@ namespace BoozeBlocks.Player
             if (input == null) input = GetComponent<PlayerInputReader>();
             if (vitals == null) vitals = GetComponent<PlayerVitals>();
             if (feedback == null) feedback = GetComponent<PlayerActionFeedback>();
-            if (input == null || vitals == null || !input.DrinkPressed) return;
+            if (!hasExecutionAuthority || input == null || vitals == null || !input.DrinkPressed) return;
             TryDrink();
         }
 
@@ -45,6 +49,7 @@ namespace BoozeBlocks.Player
                 return false;
             }
             vitals.RefillBuzz(buzzPerServing);
+            Drank?.Invoke();
             feedback?.Show($"Bebiste booze. Quedan {Model.DrinkServings} cargas.");
             return true;
         }
@@ -57,6 +62,11 @@ namespace BoozeBlocks.Player
         public void EquipDefense(DefenseItemType item, int uses)
         {
             Model.EquipDefense(item, uses);
+        }
+
+        public void SetExecutionAuthority(bool isAuthoritative)
+        {
+            hasExecutionAuthority = isAuthoritative;
         }
     }
 }

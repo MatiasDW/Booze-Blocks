@@ -17,6 +17,7 @@ namespace BoozeBlocks.Interaction
         private PlayerActionFeedback feedback;
         private IInteractable current;
         private float nextScanTime;
+        private bool hasExecutionAuthority = true;
 
         public string CurrentPrompt => current != null && current.CanInteract(vitals) ? current.Prompt : string.Empty;
 
@@ -41,7 +42,12 @@ namespace BoozeBlocks.Interaction
                 nextScanTime = Time.unscaledTime + scanInterval;
             }
 
-            if (interactPressed) TryInteract();
+            if (interactPressed && hasExecutionAuthority) TryInteract();
+        }
+
+        public void SetExecutionAuthority(bool isAuthoritative)
+        {
+            hasExecutionAuthority = isAuthoritative;
         }
 
         public bool TryInteract()
@@ -51,7 +57,10 @@ namespace BoozeBlocks.Interaction
             {
                 string action = current.Prompt.Replace("E - ", string.Empty);
                 current.Interact(vitals);
-                feedback?.Show($"{action}: listo");
+                string result = current is IInteractionResult resultProvider
+                    ? resultProvider.InteractionResult
+                    : $"{action}: listo";
+                feedback?.Show(result);
                 current = FindClosestInteractable();
                 return true;
             }

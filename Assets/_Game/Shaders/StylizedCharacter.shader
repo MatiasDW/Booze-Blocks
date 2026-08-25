@@ -6,6 +6,9 @@ Shader "BoozeBlocks/StylizedCharacter"
         _SkinColor ("Skin", Color) = (1.0, 0.67, 0.44, 1)
         _PantsColor ("Pants", Color) = (0.08, 0.14, 0.22, 1)
         _DarkColor ("Hair and shoes", Color) = (0.05, 0.035, 0.025, 1)
+        _RimColor ("Rim color", Color) = (1.0, 0.85, 0.55, 1)
+        _RimPower ("Rim power", Range(0.5, 8)) = 3.0
+        _RimIntensity ("Rim intensity", Range(0, 2)) = 0.75
     }
 
     SubShader
@@ -21,10 +24,14 @@ Shader "BoozeBlocks/StylizedCharacter"
         fixed4 _SkinColor;
         fixed4 _PantsColor;
         fixed4 _DarkColor;
+        fixed4 _RimColor;
+        half _RimPower;
+        half _RimIntensity;
 
         struct Input
         {
             fixed4 color : COLOR;
+            float3 viewDir;
         };
 
         void surf(Input input, inout SurfaceOutput output)
@@ -35,6 +42,8 @@ Shader "BoozeBlocks/StylizedCharacter"
                 + _SkinColor.rgb * mask.g
                 + _PantsColor.rgb * mask.b
                 + _DarkColor.rgb * darkMask;
+            half rim = pow(1.0 - saturate(dot(normalize(input.viewDir), output.Normal)), _RimPower);
+            output.Emission = _RimColor.rgb * rim * _RimIntensity;
             output.Alpha = 1.0;
         }
         ENDCG

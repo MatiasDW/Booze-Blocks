@@ -33,9 +33,13 @@ namespace BoozeBlocks.Player
         {
             get { return Model.Balance / Model.MaxBalance; }
         }
+        public float BuzzSpeedMultiplier => Mathf.Lerp(0.95f, 1.30f, BuzzRatio);
+        public float BuzzStrengthMultiplier => Mathf.Lerp(0.90f, 1.55f, BuzzRatio);
+        public float BuzzInstability => Mathf.Pow(BuzzRatio, 1.35f);
         public float BalanceAfterRecovery => config != null ? config.BalanceAfterRecovery : 0.25f;
 
         private bool eliminationRaised;
+        private bool hasSimulationAuthority = true;
 
         private void Awake()
         {
@@ -45,7 +49,7 @@ namespace BoozeBlocks.Player
         private void EnsureModel()
         {
             if (model != null) return;
-            float maxHealth = config != null ? config.MaxHealth : 100f;
+            float maxHealth = config != null ? config.MaxHealth : 150f;
             float maxBuzz = config != null ? config.MaxBuzz : 100f;
             float maxBalance = config != null ? config.MaxBalance : 100f;
             model = new PlayerVitalsModel(maxHealth, maxBuzz, maxBalance);
@@ -64,8 +68,9 @@ namespace BoozeBlocks.Player
         private void Update()
         {
             EnsureModel();
+            if (!hasSimulationAuthority) return;
             float buzzDrain = config != null ? config.BuzzDrainRate : 3f;
-            float dryHealthDrain = config != null ? config.DryHealthDrainRate : 8f;
+            float dryHealthDrain = config != null ? config.DryHealthDrainRate : 4f;
             float balanceRecovery = config != null ? config.BalanceRecoveryRate : 14f;
             Model.Tick(Time.deltaTime, buzzDrain, dryHealthDrain, balanceRecovery);
 
@@ -89,10 +94,46 @@ namespace BoozeBlocks.Player
             Model.RefillBuzz(amount);
         }
 
+        public void ApplyDamage(float amount)
+        {
+            EnsureModel();
+            if (Model.ApplyDamage(amount)) RaiseEliminated();
+        }
+
+        public void Heal(float amount)
+        {
+            EnsureModel();
+            Model.Heal(amount);
+        }
+
         public void RecoverBalance()
         {
             EnsureModel();
             Model.RecoverFromKnockdown(BalanceAfterRecovery);
+        }
+
+        public void SetSimulationAuthority(bool isAuthoritative)
+        {
+            hasSimulationAuthority = isAuthoritative;
+        }
+
+        public void ApplyRemoteSnapshot(float healthRatio, float buzzRatio, float balanceRatio)
+        {
+            EnsureModel();
+            bool wasEliminated = Model.IsEliminated;
+            Model.ApplySnapshot(healthRatio, buzzRatio, balanceRatio);
+            if (!wasEliminated && Model.IsEliminated)
+            {
+                RaiseEliminated();
+            }
+        }
+
+        private void RaiseEliminated()
+        {
+            if (eliminationRaised) return;
+            eliminationRaised = true;
+            Eliminated?.Invoke();
+            PlayerRegistry.NotifyStateChanged();
         }
     }
 }

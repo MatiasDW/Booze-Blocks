@@ -24,5 +24,14 @@ namespace BoozeBlocks.Horde
             float additional = Math.Max(0f, additionalUnitMultiplier);
             return firstUnitPressure * (1f + (contactCount - 1) * additional);
         }
+
+        public static int CalculateRampedUnits(int maximumForWave, float activeElapsedTime,
+            float rampDuration)
+        {
+            if (maximumForWave <= 0 || activeElapsedTime <= 0f) return 0;
+            if (rampDuration <= 0f) return maximumForWave;
+            double ratio = Math.Min(1d, activeElapsedTime / rampDuration);
+            return (int)Math.Min(maximumForWave, Math.Ceiling(maximumForWave * ratio));
+        }
     }
 }

@@ -2,6 +2,8 @@ using System;
 using System.Collections;
 using System.Collections.Generic;
 using BoozeBlocks.Player;
+using BoozeBlocks.Prototype;
+using Unity.Profiling;
 using UnityEngine;
 using UnityEngine.Rendering;
 
@@ -12,6 +14,10 @@ namespace BoozeBlocks.Horde
     public sealed class HordeDirector : MonoBehaviour
     {
         private const int KidLayer = 2; // Built-in Ignore Raycast layer.
+        private static readonly ProfilerMarker UpdateMarker = new ProfilerMarker("BoozeBlocks.Horde.Update");
+        private static readonly ProfilerMarker PopulationMarker = new ProfilerMarker("BoozeBlocks.Horde.Population");
+        private static readonly ProfilerMarker TargetingMarker = new ProfilerMarker("BoozeBlocks.Horde.Targeting");
+        private static readonly ProfilerMarker PressureMarker = new ProfilerMarker("BoozeBlocks.Horde.Pressure");
 
         [SerializeField] private HordeBalanceConfig config;
         [SerializeField, Min(1f)] private float spawnRadius = 15f;
@@ -33,27 +39,43 @@ namespace BoozeBlocks.Horde
         private int[] contactCounts = Array.Empty<int>();
         private Vector3[] contactDirections = Array.Empty<Vector3>();
         private int desiredUnitCount;
+        private int waveUnitLimit;
         private int nextUnitId;
+        private int nextSpawnAttempt;
         private bool initialized;
         private bool hasSimulationAuthority = true;
         private HordeWaveModel wave;
+        private int remoteWaveNumber = 1;
+        private int remoteDifficultyStep;
+        private bool remoteWaveActive = true;
+        private float remoteWaveRemaining;
+
+        public event Action<int, bool> PhaseChanged;
+        public event Action<Vector3> UnitHit;
+        public event Action<Vector3> UnitDefeated;
 
         public int ActiveUnitCount => activeUnits?.Count ?? 0;
         public int DesiredUnitCount => desiredUnitCount;
+        public int WaveUnitLimit => waveUnitLimit;
         public int ActivePlayerCount => activePlayers?.Count ?? 0;
-        public int CurrentWave => wave?.WaveNumber ?? 1;
-        public int DifficultyStep => wave?.DifficultyStep ?? 0;
-        public bool IsWaveActive => wave == null || wave.IsWaveActive;
-        public float WaveRemainingTime => wave?.RemainingTime ?? 0f;
+        public int CurrentWave => hasSimulationAuthority ? wave?.WaveNumber ?? 1 : remoteWaveNumber;
+        public int DifficultyStep => hasSimulationAuthority ? wave?.DifficultyStep ?? 0 : remoteDifficultyStep;
+        public bool IsWaveActive => hasSimulationAuthority ? wave == null || wave.IsWaveActive : remoteWaveActive;
+        public bool IsPreparing => hasSimulationAuthority
+            ? wave?.Phase == HordeWavePhase.Preparation
+            : !remoteWaveActive && remoteWaveNumber == 1 && remoteWaveRemaining > BreakDuration;
+        public float WaveRemainingTime => hasSimulationAuthority ? wave?.RemainingTime ?? 0f : remoteWaveRemaining;
+        public bool HasSimulationAuthority => hasSimulationAuthority;
 
         public int ApplyDefenseSweep(Vector3 origin, Vector3 forward, float radius, float minimumDot,
-            float knockbackDistance, float stunDuration)
+            float knockbackDistance, float stunDuration, float damage, out int defeated)
         {
             EnsureRuntimeCollections();
             Vector3 flatForward = Vector3.ProjectOnPlane(forward, Vector3.up).normalized;
             float radiusSquared = radius * radius;
             int affected = 0;
-            for (int i = 0; i < activeUnits.Count; i++)
+            defeated = 0;
+            for (int i = activeUnits.Count - 1; i >= 0; i--)
             {
                 KidUnit unit = activeUnits[i];
                 if (unit == null || !unit.isActiveAndEnabled) continue;
@@ -61,8 +83,16 @@ namespace BoozeBlocks.Horde
                 float distanceSquared = delta.sqrMagnitude;
                 if (distanceSquared > radiusSquared || distanceSquared <= 0.001f) continue;
                 if (Vector3.Dot(flatForward, delta.normalized) < minimumDot) continue;
-                unit.KnockAway(origin, knockbackDistance, stunDuration);
+                Vector3 hitPosition = unit.Position;
+                bool wasDefeated = unit.ReceiveHit(damage, origin, knockbackDistance, stunDuration);
                 affected++;
+                UnitHit?.Invoke(hitPosition);
+                if (!wasDefeated) continue;
+                activeUnits.RemoveAt(i);
+                unit.Deactivate();
+                pool.Enqueue(unit);
+                defeated++;
+                UnitDefeated?.Invoke(hitPosition);
             }
             return affected;
         }
@@ -72,12 +102,30 @@ namespace BoozeBlocks.Horde
         private int UnitsPerDifficultyStep => config != null ? config.UnitsPerDifficultyStep : 6;
         private int MaximumUnits => config != null ? config.MaximumUnits : 96;
         private int WavesPerDifficultyStep => config != null ? config.WavesPerDifficultyStep : 2;
-        private float WaveDuration => config != null ? config.WaveDuration : 20f;
-        private float BreakDuration => config != null ? config.BreakDuration : 5f;
+        private float InitialPreparationDuration => config != null ? config.InitialPreparationDuration : 25f;
+        private float WaveDuration => config != null ? config.WaveDuration : 60f;
+        private float BreakDuration => config != null ? config.BreakDuration : 15f;
+        private float SpawnRampDuration => config != null ? config.SpawnRampDuration : 20f;
         private float RetargetInterval => config != null ? config.RetargetInterval : 0.65f;
-        private float SpawnInterval => config != null ? config.SpawnInterval : 0.06f;
-        private float FirstUnitPressure => config != null ? config.FirstUnitPressure : 9f;
-        private float AdditionalPressureMultiplier => config != null ? config.AdditionalUnitPressureMultiplier : 0.7f;
+        private float SpawnInterval => config != null ? config.SpawnInterval : 0.10f;
+        private float KidHealth => (config != null ? config.BaseKidHealth : 3f) +
+                                   DifficultyStep * (config != null ? config.KidHealthPerDifficultyStep : 0.5f);
+        private float BarricadeAttackDamage => (config != null ? config.BarricadeAttackDamage : 4f) +
+                                               DifficultyStep *
+                                               (config != null
+                                                   ? config.BarricadeAttackDamagePerDifficulty
+                                                   : 0.5f);
+        private float BarricadePressureDamage => (config != null ? config.BarricadePressureDamage : 2f) +
+                                                 DifficultyStep *
+                                                 (config != null
+                                                     ? config.BarricadePressureDamagePerDifficulty
+                                                     : 0.25f);
+        private float FirstUnitPressure => config != null ? config.FirstUnitPressure : 7f;
+        private float AdditionalPressureMultiplier => config != null ? config.AdditionalUnitPressureMultiplier : 0.55f;
+        private float FirstUnitHealthDamage => config != null ? config.FirstUnitHealthDamage : 0.65f;
+        private float AdditionalHealthDamageMultiplier => config != null
+            ? config.AdditionalUnitHealthDamageMultiplier
+            : 0.50f;
         private float TargetCrowdPenalty => config != null ? config.TargetCrowdPenalty : 36f;
 
         private void OnEnable()
@@ -94,8 +142,7 @@ namespace BoozeBlocks.Horde
         private void OnDisable()
         {
             PlayerRegistry.Changed -= HandlePlayersChanged;
-            if (populationRoutine != null) StopCoroutine(populationRoutine);
-            populationRoutine = null;
+            ClearPopulation();
         }
 
         private void OnDestroy()
@@ -123,7 +170,7 @@ namespace BoozeBlocks.Horde
                 kidCharacterMaterial = new Material(characterShader) { enableInstancing = true };
             }
             kidCharacterPrefab = Resources.Load<GameObject>("KidCharacter");
-            wave = new HordeWaveModel(WaveDuration, BreakDuration, WavesPerDifficultyStep);
+            wave = CreateWaveModel();
             initialized = true;
             RefreshPlayersAndPopulation();
         }
@@ -131,21 +178,29 @@ namespace BoozeBlocks.Horde
         private void Update()
         {
             if (!initialized || !hasSimulationAuthority) return;
-            if (wave == null) wave = new HordeWaveModel(WaveDuration, BreakDuration, WavesPerDifficultyStep);
-            bool waveChanged = wave.Tick(Time.deltaTime);
-            retargetTimer -= Time.deltaTime;
-            if (!waveChanged && retargetTimer > 0f) return;
-            retargetTimer = RetargetInterval;
-            RefreshPlayersAndPopulation();
-            AssignTargets();
+            using (UpdateMarker.Auto())
+            {
+                if (wave == null) wave = CreateWaveModel();
+                bool waveChanged = wave.Tick(Time.deltaTime);
+                if (waveChanged) PhaseChanged?.Invoke(wave.WaveNumber, wave.IsWaveActive);
+                retargetTimer -= Time.deltaTime;
+                if (!waveChanged && retargetTimer > 0f) return;
+                retargetTimer = RetargetInterval;
+                if (IsWaveActive) HordeEntranceRegistry.ApplyHordePressure(BarricadePressureDamage);
+                RefreshPlayersAndPopulation();
+                AssignTargets();
+            }
         }
 
         private void FixedUpdate()
         {
             if (!initialized || !hasSimulationAuthority || !IsWaveActive) return;
-            EnsureRuntimeCollections();
-            spatialGrid.Rebuild(activeUnits);
-            ApplyAggregatedPressure();
+            using (PressureMarker.Auto())
+            {
+                EnsureRuntimeCollections();
+                spatialGrid.Rebuild(activeUnits);
+                ApplyAggregatedPressure();
+            }
         }
 
         private void HandlePlayersChanged()
@@ -158,19 +213,26 @@ namespace BoozeBlocks.Horde
 
         private void RefreshPlayersAndPopulation()
         {
-            EnsureRuntimeCollections();
-            PlayerRegistry.Fill(activePlayers, false);
-            playerIndices.Clear();
-            for (int i = 0; i < activePlayers.Count; i++) playerIndices[activePlayers[i]] = i;
-            desiredUnitCount = hasSimulationAuthority && IsWaveActive
-                ? HordeScalingModel.CalculateActiveUnits(activePlayers.Count, DifficultyStep,
-                    BaseUnits, UnitsPerAdditionalPlayer, UnitsPerDifficultyStep, MaximumUnits)
-                : 0;
-            EnsureCounterCapacity(activePlayers.Count);
-
-            if (activeUnits.Count != desiredUnitCount && populationRoutine == null)
+            using (PopulationMarker.Auto())
             {
-                populationRoutine = StartCoroutine(ReconcilePopulation());
+                EnsureRuntimeCollections();
+                PlayerRegistry.Fill(activePlayers, false);
+                playerIndices.Clear();
+                for (int i = 0; i < activePlayers.Count; i++) playerIndices[activePlayers[i]] = i;
+                waveUnitLimit = hasSimulationAuthority
+                    ? HordeScalingModel.CalculateActiveUnits(activePlayers.Count, DifficultyStep,
+                        BaseUnits, UnitsPerAdditionalPlayer, UnitsPerDifficultyStep, MaximumUnits)
+                    : desiredUnitCount;
+                desiredUnitCount = hasSimulationAuthority && IsWaveActive
+                    ? HordeScalingModel.CalculateRampedUnits(waveUnitLimit,
+                        wave?.ActiveElapsedTime ?? SpawnRampDuration, SpawnRampDuration)
+                    : 0;
+                EnsureCounterCapacity(activePlayers.Count);
+
+                if (activeUnits.Count != desiredUnitCount && populationRoutine == null)
+                {
+                    populationRoutine = StartCoroutine(ReconcilePopulation());
+                }
             }
         }
 
@@ -196,7 +258,9 @@ namespace BoozeBlocks.Horde
                 if (activeUnits.Count < desiredUnitCount)
                 {
                     Vector3 position;
-                    if (HordeEntranceRegistry.TryGetSpawnPoint(nextUnitId, out Vector3 entrancePosition))
+                    int spawnAttempt = nextSpawnAttempt++;
+                    if (HordeEntranceRegistry.TryGetSpawnPoint(spawnAttempt, BarricadeAttackDamage,
+                            out Vector3 entrancePosition))
                     {
                         position = new Vector3(entrancePosition.x, 1f, entrancePosition.z);
                     }
@@ -215,7 +279,7 @@ namespace BoozeBlocks.Horde
                         ? activePlayers[activeUnits.Count % activePlayers.Count]
                         : null;
                     activeUnits.Add(unit);
-                    unit.Activate(position, target);
+                    unit.Activate(position, target, KidHealth);
                     if (spawnWait != null) yield return spawnWait;
                     else yield return null;
                 }
@@ -237,29 +301,32 @@ namespace BoozeBlocks.Horde
 
         private void AssignTargets()
         {
-            EnsureCounterCapacity(activePlayers.Count);
-            Array.Clear(assignmentCounts, 0, assignmentCounts.Length);
-
-            for (int unitIndex = 0; unitIndex < activeUnits.Count; unitIndex++)
+            using (TargetingMarker.Auto())
             {
-                KidUnit unit = activeUnits[unitIndex];
-                PlayerVitals bestTarget = null;
-                int bestPlayerIndex = -1;
-                float bestScore = float.MaxValue;
+                EnsureCounterCapacity(activePlayers.Count);
+                Array.Clear(assignmentCounts, 0, assignmentCounts.Length);
 
-                for (int playerIndex = 0; playerIndex < activePlayers.Count; playerIndex++)
+                for (int unitIndex = 0; unitIndex < activeUnits.Count; unitIndex++)
                 {
-                    PlayerVitals player = activePlayers[playerIndex];
-                    float distance = (unit.Position - player.transform.position).sqrMagnitude;
-                    float score = distance + assignmentCounts[playerIndex] * TargetCrowdPenalty;
-                    if (score >= bestScore) continue;
-                    bestScore = score;
-                    bestTarget = player;
-                    bestPlayerIndex = playerIndex;
-                }
+                    KidUnit unit = activeUnits[unitIndex];
+                    PlayerVitals bestTarget = null;
+                    int bestPlayerIndex = -1;
+                    float bestScore = float.MaxValue;
 
-                unit.SetPlayerTarget(bestTarget);
-                if (bestPlayerIndex >= 0) assignmentCounts[bestPlayerIndex]++;
+                    for (int playerIndex = 0; playerIndex < activePlayers.Count; playerIndex++)
+                    {
+                        PlayerVitals player = activePlayers[playerIndex];
+                        float distance = (unit.Position - player.transform.position).sqrMagnitude;
+                        float score = distance + assignmentCounts[playerIndex] * TargetCrowdPenalty;
+                        if (score >= bestScore) continue;
+                        bestScore = score;
+                        bestTarget = player;
+                        bestPlayerIndex = playerIndex;
+                    }
+
+                    unit.SetPlayerTarget(bestTarget);
+                    if (bestPlayerIndex >= 0) assignmentCounts[bestPlayerIndex]++;
+                }
             }
         }
 
@@ -290,6 +357,12 @@ namespace BoozeBlocks.Horde
                     float pushStrength = Mathf.Min(0.85f, 0.10f + contactCounts[i] * 0.025f);
                     activePlayers[i].GetComponent<PlayerMotor>()?.ApplyCrowdPush(contactDirections[i], pushStrength);
                 }
+                float healthDamagePerSecond = HordeScalingModel.CalculatePressurePerSecond(contactCounts[i],
+                    FirstUnitHealthDamage, AdditionalHealthDamageMultiplier);
+                if (healthDamagePerSecond > 0f)
+                {
+                    activePlayers[i].ApplyDamage(healthDamagePerSecond * Time.fixedDeltaTime);
+                }
             }
         }
 
@@ -308,7 +381,107 @@ namespace BoozeBlocks.Horde
             if (hasSimulationAuthority == isAuthoritative) return;
             hasSimulationAuthority = isAuthoritative;
             if (!initialized) return;
+            if (!hasSimulationAuthority)
+            {
+                if (populationRoutine != null) StopCoroutine(populationRoutine);
+                populationRoutine = null;
+                ReturnAllUnitsToPool();
+            }
             RefreshPlayersAndPopulation();
+        }
+
+        public bool SkipPreparation()
+        {
+            if (!hasSimulationAuthority || wave?.Phase != HordeWavePhase.Preparation) return false;
+            wave.Tick(wave.RemainingTime);
+            PhaseChanged?.Invoke(wave.WaveNumber, true);
+            retargetTimer = RetargetInterval;
+            RefreshPlayersAndPopulation();
+            AssignTargets();
+            return true;
+        }
+
+        public void ResetForMenu()
+        {
+            ClearPopulation();
+            waveUnitLimit = 0;
+            remoteWaveNumber = 1;
+            remoteDifficultyStep = 0;
+            remoteWaveActive = false;
+            remoteWaveRemaining = InitialPreparationDuration;
+            if (initialized) wave = CreateWaveModel();
+        }
+
+        public void FillPoseSnapshots(List<HordePoseSnapshot> destination)
+        {
+            destination.Clear();
+            if (!hasSimulationAuthority) return;
+            for (int i = 0; i < activeUnits.Count; i++)
+            {
+                KidUnit unit = activeUnits[i];
+                if (unit == null || !unit.isActiveAndEnabled) continue;
+                destination.Add(new HordePoseSnapshot(unit.Position, unit.transform.eulerAngles.y));
+            }
+        }
+
+        public void ApplyRemoteSnapshot(IReadOnlyList<HordePoseSnapshot> poses, int waveNumber,
+            int difficultyStep, bool waveActive, float waveRemaining)
+        {
+            if (hasSimulationAuthority || !initialized || poses == null) return;
+            remoteWaveNumber = Mathf.Max(1, waveNumber);
+            remoteDifficultyStep = Mathf.Max(0, difficultyStep);
+            remoteWaveActive = waveActive;
+            remoteWaveRemaining = Mathf.Max(0f, waveRemaining);
+            desiredUnitCount = Mathf.Min(MaximumUnits, poses.Count);
+            waveUnitLimit = Mathf.Max(desiredUnitCount, waveUnitLimit);
+
+            while (activeUnits.Count < desiredUnitCount)
+            {
+                KidUnit unit = pool.Count > 0 ? pool.Dequeue() : CreateKid();
+                HordePoseSnapshot initial = poses[activeUnits.Count];
+                activeUnits.Add(unit);
+                unit.ActivateReplica(initial.Position, initial.Yaw);
+            }
+            while (activeUnits.Count > desiredUnitCount)
+            {
+                int last = activeUnits.Count - 1;
+                KidUnit unit = activeUnits[last];
+                activeUnits.RemoveAt(last);
+                unit.Deactivate();
+                pool.Enqueue(unit);
+            }
+            for (int i = 0; i < activeUnits.Count; i++)
+            {
+                HordePoseSnapshot pose = poses[i];
+                activeUnits[i].ApplyReplicaPose(pose.Position, pose.Yaw);
+            }
+        }
+
+        private void ReturnAllUnitsToPool()
+        {
+            for (int i = activeUnits.Count - 1; i >= 0; i--)
+            {
+                KidUnit unit = activeUnits[i];
+                activeUnits.RemoveAt(i);
+                if (unit == null) continue;
+                unit.Deactivate();
+                pool.Enqueue(unit);
+            }
+            desiredUnitCount = 0;
+        }
+
+        private void ClearPopulation()
+        {
+            if (populationRoutine != null) StopCoroutine(populationRoutine);
+            populationRoutine = null;
+            EnsureRuntimeCollections();
+            ReturnAllUnitsToPool();
+        }
+
+        private HordeWaveModel CreateWaveModel()
+        {
+            return new HordeWaveModel(WaveDuration, BreakDuration, WavesPerDifficultyStep,
+                InitialPreparationDuration);
         }
 
         private KidUnit CreateKid()

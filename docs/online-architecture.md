@@ -38,13 +38,23 @@ El host mantendra la simulacion real y enviara snapshots compactos por lotes:
 
 Este formato debe medirse antes de fijarlo. Si el ancho de banda supera el presupuesto, se reduce frecuencia, precision o relevancia por distancia; no se baja la autoridad.
 
+## Implementacion actual
+
+- `NetworkGameplayCoordinator` usa mensajes nombrados NGO; los personajes procedurales no dependen de prefabs de red.
+- Clientes envian movimiento a 20 Hz y acciones importantes por un canal fiable.
+- El host distribuye a 10 Hz un snapshot inferior a 1.2 KB con jugadores, apariencia, vitales, inventario, horda, ronda, puntuacion y tareas compartidas.
+- Posiciones usan centimetros en enteros de 16 bits; rotacion, ratios y tiempos tambien se cuantizan.
+- Solo el host ejecuta drenaje de BUZZ, presion, interacciones, parrilla, mezcla, distracciones y dano por secciones de barricadas. El snapshot envia su integridad cuantizada en un byte.
+- La pausa online es local y envia movimiento cero; no congela la simulacion del host.
+- Si cae el host, los clientes cierran el transporte y regresan al menu. Migracion de host sigue fuera del MVP.
+
 ## Frecuencias objetivo
 
 | Sistema | Frecuencia inicial |
 | --- | ---: |
 | Simulacion del host | 30 Hz |
-| Input de jugadores | 30 Hz |
-| Snapshots de jugadores | 15-20 Hz |
+| Input de jugadores | 20 Hz |
+| Snapshot agregado de mundo | 10 Hz |
 | Snapshot agrupado de horda | 10 Hz |
 | Actualizacion visual de NPC | Cada frame, interpolada |
 

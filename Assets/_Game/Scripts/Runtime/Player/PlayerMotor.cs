@@ -1,3 +1,4 @@
+using System;
 using UnityEngine;
 
 namespace BoozeBlocks.Player
@@ -6,10 +7,12 @@ namespace BoozeBlocks.Player
     [RequireComponent(typeof(Rigidbody), typeof(CapsuleCollider), typeof(PlayerInputReader))]
     public sealed class PlayerMotor : MonoBehaviour
     {
+        public event Action Jumped;
+
         [SerializeField, Min(0f)] private float maxSpeed = 6.5f;
         [SerializeField, Min(0f)] private float acceleration = 20f;
         [SerializeField, Min(0f)] private float deceleration = 12f;
-        [SerializeField, Min(0f)] private float turnSpeed = 9f;
+        [SerializeField, Min(0f)] private float turnSpeed = 13f;
         [SerializeField, Range(0f, 1f)] private float airControl = 0.28f;
         [SerializeField, Min(0f)] private float crowdPushCooldown = 0.14f;
         [SerializeField, Min(0f)] private float jumpSpeed = 5.2f;
@@ -27,6 +30,12 @@ namespace BoozeBlocks.Player
         private float driftPhase;
         private float jumpQueuedUntil;
         private float lastGroundedTime;
+        private bool grounded;
+        private bool knockdownPhysicsActive;
+
+        public bool ControlEnabled => controlEnabled;
+        public bool IsGrounded => grounded;
+        public bool KnockdownPhysicsActive => knockdownPhysicsActive;
 
         private void Awake()
         {
@@ -35,6 +44,7 @@ namespace BoozeBlocks.Player
             input = GetComponent<PlayerInputReader>();
             vitals = GetComponent<PlayerVitals>();
             driftPhase = transform.position.x * 0.37f + transform.position.z * 0.19f;
+            body.interpolation = RigidbodyInterpolation.Interpolate;
         }
 
         private void Start()
@@ -59,22 +69,28 @@ namespace BoozeBlocks.Player
             if (!controlEnabled) return;
 
             Vector2 moveInput = controlEnabled ? input.Move : Vector2.zero;
-            Vector3 facingDirection = GetCameraRelativeDirection(moveInput);
+            Vector3 facingDirection = input.TryGetRemoteWorldDirection(out Vector3 remoteDirection)
+                ? remoteDirection
+                : GetCameraRelativeDirection(moveInput);
             Vector3 desiredDirection = facingDirection;
+            float buzzInstability = vitals != null ? vitals.BuzzInstability : 0f;
             if (desiredDirection.sqrMagnitude > 0.001f && vitals != null)
             {
                 Vector3 sideways = Vector3.Cross(Vector3.up, desiredDirection);
-                float drift = Mathf.Sin(Time.fixedTime * 2.4f + driftPhase) *
-                              vitals.BuzzRatio * 0.07f;
+                float fastDrift = Mathf.Sin(Time.fixedTime * 2.15f + driftPhase) * 0.20f;
+                float slowDrift = Mathf.Sin(Time.fixedTime * 0.83f + driftPhase * 1.7f) * 0.10f;
+                float drift = (fastDrift + slowDrift) * buzzInstability;
                 desiredDirection = (desiredDirection + sideways * drift).normalized;
             }
 
-            bool grounded = TryGetGroundNormal(out Vector3 groundNormal);
+            grounded = TryGetGroundNormal(out Vector3 groundNormal);
             if (grounded) lastGroundedTime = Time.time;
             if (Time.time <= jumpQueuedUntil && Time.time - lastGroundedTime <= coyoteTime)
             {
-                float verticalBoost = Mathf.Max(0f, jumpSpeed - body.linearVelocity.y);
+                float buzzJumpBonus = Mathf.Lerp(1f, 1.12f, vitals != null ? vitals.BuzzRatio : 0f);
+                float verticalBoost = Mathf.Max(0f, jumpSpeed * buzzJumpBonus - body.linearVelocity.y);
                 body.AddForce(Vector3.up * verticalBoost, ForceMode.VelocityChange);
+                Jumped?.Invoke();
                 jumpQueuedUntil = 0f;
                 lastGroundedTime = float.NegativeInfinity;
                 grounded = false;
@@ -84,8 +100,11 @@ namespace BoozeBlocks.Player
                 desiredDirection = Vector3.ProjectOnPlane(desiredDirection, groundNormal).normalized;
             }
             Vector3 horizontalVelocity = Vector3.ProjectOnPlane(body.linearVelocity, Vector3.up);
-            Vector3 desiredVelocity = desiredDirection * maxSpeed;
+            float speedMultiplier = vitals != null ? vitals.BuzzSpeedMultiplier : 1f;
+            float speedPulse = 1f + Mathf.Sin(Time.fixedTime * 3.1f + driftPhase) * buzzInstability * 0.045f;
+            Vector3 desiredVelocity = desiredDirection * (maxSpeed * speedMultiplier * speedPulse);
             float rate = desiredDirection.sqrMagnitude > 0.001f ? acceleration : deceleration;
+            rate *= Mathf.Lerp(1f, desiredDirection.sqrMagnitude > 0.001f ? 0.72f : 0.52f, buzzInstability);
             if (!grounded) rate *= airControl;
 
             Vector3 velocityChange = Vector3.MoveTowards(horizontalVelocity, desiredVelocity, rate * Time.fixedDeltaTime) - horizontalVelocity;
@@ -95,7 +114,8 @@ namespace BoozeBlocks.Player
             if (facingDirection.sqrMagnitude > 0.001f)
             {
                 Quaternion targetRotation = Quaternion.LookRotation(facingDirection, Vector3.up);
-                float rotationBlend = 1f - Mathf.Exp(-turnSpeed * Time.fixedDeltaTime);
+                float effectiveTurnSpeed = turnSpeed * Mathf.Lerp(1f, 0.48f, buzzInstability);
+                float rotationBlend = 1f - Mathf.Exp(-effectiveTurnSpeed * Time.fixedDeltaTime);
                 body.MoveRotation(Quaternion.Slerp(body.rotation, targetRotation, rotationBlend));
             }
         }
@@ -121,6 +141,26 @@ namespace BoozeBlocks.Player
             if (body == null) return;
             Vector3 direction = lastCrowdDirection.sqrMagnitude > 0.001f ? lastCrowdDirection : -transform.forward;
             body.AddForce(direction * 2.8f + Vector3.up * 1.4f, ForceMode.VelocityChange);
+            Vector3 torqueAxis = Vector3.Cross(Vector3.up, direction).normalized + Vector3.up * 0.25f;
+            body.AddTorque(torqueAxis * 5.5f, ForceMode.VelocityChange);
+        }
+
+        public void SetKnockdownPhysics(bool enabled)
+        {
+            EnsureDependencies();
+            if (body == null || knockdownPhysicsActive == enabled) return;
+            knockdownPhysicsActive = enabled;
+            if (enabled)
+            {
+                body.constraints = RigidbodyConstraints.None;
+                return;
+            }
+
+            body.angularVelocity = Vector3.zero;
+            Vector3 forward = Vector3.ProjectOnPlane(transform.forward, Vector3.up);
+            if (forward.sqrMagnitude <= 0.001f) forward = Vector3.forward;
+            body.rotation = Quaternion.LookRotation(forward.normalized, Vector3.up);
+            body.constraints = RigidbodyConstraints.FreezeRotationX | RigidbodyConstraints.FreezeRotationZ;
         }
 
         private Vector3 GetCameraRelativeDirection(Vector2 moveInput)

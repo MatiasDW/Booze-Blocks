@@ -22,7 +22,9 @@ namespace BoozeBlocks.Distractions
         private float activeUntil;
         private float cooldownUntil;
         private bool interactionEnabled = true;
+        private float durationMultiplier = 1f;
         private Vector3 baseScale;
+        private bool hasSimulationAuthority = true;
 
         public event Action Activated;
 
@@ -30,6 +32,7 @@ namespace BoozeBlocks.Distractions
         public bool IsActive => Time.time < activeUntil;
         public bool IsInteractionEnabled => interactionEnabled;
         public float CooldownRemaining => Mathf.Max(0f, cooldownUntil - Time.time);
+        public float ActiveRemaining => Mathf.Max(0f, activeUntil - Time.time);
         public bool IsReady => interactionEnabled && !IsActive && CooldownRemaining <= 0f;
         public float Radius => radius;
         public int Priority => priority;
@@ -78,6 +81,11 @@ namespace BoozeBlocks.Distractions
             interactionEnabled = enabled;
         }
 
+        public void SetDurationMultiplier(float multiplier)
+        {
+            durationMultiplier = Mathf.Clamp(multiplier, 0.25f, 2f);
+        }
+
         public bool CanInteract(PlayerVitals player)
         {
             return IsReady;
@@ -85,12 +93,25 @@ namespace BoozeBlocks.Distractions
 
         public void Interact(PlayerVitals player)
         {
-            if (!CanInteract(player)) return;
-            activeUntil = Time.time + duration;
+            if (!hasSimulationAuthority || !CanInteract(player)) return;
+            activeUntil = Time.time + duration * durationMultiplier;
             cooldownUntil = activeUntil + cooldown;
             claims ??= new HashSet<int>();
             claims.Clear();
             Activated?.Invoke();
+        }
+
+        public void SetSimulationAuthority(bool isAuthoritative)
+        {
+            hasSimulationAuthority = isAuthoritative;
+        }
+
+        public void ApplyRemoteState(bool enabled, float activeRemaining, float cooldownRemaining)
+        {
+            if (hasSimulationAuthority) return;
+            interactionEnabled = enabled;
+            activeUntil = Time.time + Mathf.Max(0f, activeRemaining);
+            cooldownUntil = Time.time + Mathf.Max(activeRemaining, cooldownRemaining);
         }
 
         public bool CanAffect(Vector3 position)

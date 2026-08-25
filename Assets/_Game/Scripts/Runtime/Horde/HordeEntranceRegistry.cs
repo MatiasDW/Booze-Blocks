@@ -26,6 +26,11 @@ namespace BoozeBlocks.Horde
 
         public static bool TryGetSpawnPoint(int sequence, out Vector3 position)
         {
+            return TryGetSpawnPoint(sequence, 0f, out position);
+        }
+
+        public static bool TryGetSpawnPoint(int sequence, float hordeDamage, out Vector3 position)
+        {
             RemoveMissing();
             int count = Entrances.Count;
             if (count == 0)
@@ -34,17 +39,14 @@ namespace BoozeBlocks.Horde
                 return false;
             }
 
-            int start = Mathf.Abs(sequence) % count;
-            for (int offset = 0; offset < count; offset++)
+            HordeEntrance entrance = Entrances[PositiveModulo(sequence, count)];
+            if (!entrance.TryResolveSpawn(sequence, hordeDamage))
             {
-                HordeEntrance entrance = Entrances[(start + offset) % count];
-                if (!entrance.CanSpawn) continue;
-                position = entrance.GetSpawnPosition(sequence);
-                return true;
+                position = default;
+                return false;
             }
-
-            position = default;
-            return false;
+            position = entrance.GetSpawnPosition(sequence);
+            return true;
         }
 
         public static int OpenCount
@@ -70,12 +72,39 @@ namespace BoozeBlocks.Horde
             }
         }
 
+        public static float TotalFlow
+        {
+            get
+            {
+                RemoveMissing();
+                float flow = 0f;
+                for (int i = 0; i < Entrances.Count; i++) flow += Entrances[i].FlowRatio;
+                return flow;
+            }
+        }
+
+        public static void ApplyHordePressure(float damage)
+        {
+            if (damage <= 0f) return;
+            RemoveMissing();
+            for (int i = 0; i < Entrances.Count; i++)
+            {
+                if (Entrances[i].IsBlocked) Entrances[i].ApplyHordeAttack(damage);
+            }
+        }
+
         private static void RemoveMissing()
         {
             for (int i = Entrances.Count - 1; i >= 0; i--)
             {
                 if (Entrances[i] == null) Entrances.RemoveAt(i);
             }
+        }
+
+        private static int PositiveModulo(int value, int divisor)
+        {
+            int remainder = value % divisor;
+            return remainder < 0 ? remainder + divisor : remainder;
         }
     }
 }

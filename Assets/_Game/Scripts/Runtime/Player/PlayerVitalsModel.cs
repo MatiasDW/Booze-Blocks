@@ -57,10 +57,31 @@ namespace BoozeBlocks.Player
             Buzz = Clamp(Buzz + amount, 0f, MaxBuzz);
         }
 
+        public bool ApplyDamage(float amount)
+        {
+            if (amount <= 0f || IsEliminated) return false;
+            Health = Clamp(Health - amount, 0f, MaxHealth);
+            return IsEliminated;
+        }
+
+        public void Heal(float amount)
+        {
+            if (amount <= 0f || IsEliminated) return;
+            Health = Clamp(Health + amount, 0f, MaxHealth);
+        }
+
         public void RecoverFromKnockdown(float retainedBalanceRatio)
         {
             Balance = MaxBalance * Clamp(retainedBalanceRatio, 0f, 1f);
             knockdownLatched = false;
+        }
+
+        public void ApplySnapshot(float healthRatio, float buzzRatio, float balanceRatio)
+        {
+            Health = MaxHealth * Clamp(healthRatio, 0f, 1f);
+            Buzz = MaxBuzz * Clamp(buzzRatio, 0f, 1f);
+            Balance = MaxBalance * Clamp(balanceRatio, 0f, 1f);
+            knockdownLatched = Balance >= MaxBalance;
         }
 
         private static float Clamp(float value, float min, float max)

@@ -8,4 +8,9 @@ namespace BoozeBlocks.Interaction
         bool CanInteract(PlayerVitals player);
         void Interact(PlayerVitals player);
     }
+
+    public interface IInteractionResult
+    {
+        string InteractionResult { get; }
+    }
 }
